@@ -1,0 +1,63 @@
+name: Jira Build & Deployment Integration
+ 
+on:
+  push:
+    branches: [main]
+ 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+ 
+      - name: Build Project
+        run: echo "Building project..."
+ 
+      - name: Extract Jira Issue Key
+        id: extract
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          ISSUE_KEY=$(echo "$COMMIT_MSG" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          echo "Extracted issue key: $ISSUE_KEY"
+          echo "issue_key=$ISSUE_KEY" >> $GITHUB_OUTPUT
+ 
+      - name: Get Jira Access Token
+        id: jira_token
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            "https://api.atlassian.com/oauth/token" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"audience\": \"api.atlassian.com\",
+              \"client_id\": \"${{ secrets.JIRA_CLIENT_ID }}\",
+              \"client_secret\": \"${{ secrets.JIRA_CLIENT_SECRET }}\",
+              \"grant_type\": \"client_credentials\"
+            }")
+          echo "Token Response: $RESPONSE"
+          TOKEN=$(echo $RESPONSE | jq -r '.access_token')
+          echo "Token: $TOKEN"
+          echo "access_token=$TOKEN" >> $GITHUB_OUTPUT
+ 
+      - name: Send Build Info to Jira
+        if: steps.extract.outputs.issue_key != ''
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            "https://api.atlassian.com/jira/builds/0.1/cloud/${{ secrets.JIRA_CLOUD_ID }}/bulk" \
+            -H "Authorization: Bearer ${{ steps.jira_token.outputs.access_token }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"builds\": [{
+                \"schemaVersion\": \"1.0\",
+                \"pipelineId\": \"${{ github.repository }}\",
+                \"buildNumber\": ${{ github.run_number }},
+                \"updateSequenceNumber\": ${{ github.run_number }},
+                \"displayName\": \"Build #${{ github.run_number }}\",
+                \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                \"state\": \"successful\",
+                \"lastUpdated\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+                \"issueKeys\": [\"${{ steps.extract.outputs.issue_key }}\"]
+              }]
+            }")
+          echo "Jira API Response: $RESPONSE"
